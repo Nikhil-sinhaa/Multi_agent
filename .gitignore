@@ -1,0 +1,19 @@
+# Secrets
+.env
+
+# Virtual Environment
+myvenv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Generated output files
+travel_plans/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
