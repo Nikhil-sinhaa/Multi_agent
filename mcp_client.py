@@ -8,7 +8,7 @@ from langchain_groq import ChatGroq
 
 load_dotenv()
 
-llm = ChatGroq(model="llama-3.3-70b-versatile")
+llm = ChatGroq(model="llama-3.1-70b-versatile")
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 AVIATION_STACK_API_KEY = os.getenv("AVIATION_STACK_API_KEY")
