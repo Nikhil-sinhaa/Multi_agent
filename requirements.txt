@@ -23,7 +23,7 @@ nest_asyncio
 
 # MCP (Model Context Protocol) integrations
 langchain-mcp-adapters
-mcp
+mcp[cli]
 
-# AviationStack MCP (local package)
-./aviationstack-mcp
+# AviationStack MCP — installed directly from GitHub
+aviationstack-mcp @ git+https://github.com/pradumnasaraf/aviationstack-mcp.git
