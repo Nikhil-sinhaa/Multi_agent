@@ -22,13 +22,24 @@ from langchain_core.messages import (
 from langchain_groq import ChatGroq
 # Fixed: removed duplicate/wrong import "from mcp.client import tavily_mcp_search" (line 17 was wrong)
 from tools.flight_tool import search_flight
+from llm_pool import LLMPool, load_api_keys
 
 from dotenv import load_dotenv
 load_dotenv()
 
-llm = ChatGroq(
-    model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
-)
+_api_keys = load_api_keys()
+llm = LLMPool([
+    ChatGroq(
+        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+        # Groq's free tier allows ~8000 tokens/minute, and the requested output counts toward it.
+        max_tokens=int(os.getenv("GROQ_MAX_TOKENS", "3000")),
+        # Parallel agents share that per-minute budget; let the client wait out 429s.
+        # With several keys, fail over to the next key sooner instead of waiting.
+        max_retries=int(os.getenv("GROQ_MAX_RETRIES", "6" if len(_api_keys) <= 1 else "1")),
+        **({"api_key": key} if key else {}),
+    )
+    for key in (_api_keys or [None])
+])
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 from mcp_client import (
@@ -584,125 +595,23 @@ def weather_agent(state: TravelState):
         "llm_calls": 1
     }
 
-@safe_agent("itinerary_agent", "itinerary")
-def itinerary_agent(state: TravelState):
+PLAN_SECTION_CHARS = 2200   # per upstream report; keeps the request under Groq's per-minute token limit
+
+
+def _clip(text: str, limit: int = PLAN_SECTION_CHARS) -> str:
+    text = text or ""
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " ...[trimmed]"
+
+
+def plan_agent(state: TravelState):
+    """Writes the day-by-day itinerary and the final travel plan in ONE call.
+
+    Replaces the old itinerary_agent + final_agent pair, which sent the same
+    research twice and rewrote the whole plan a second time.
+    """
     prompt = f"""
-You are a world-class travel itinerary architect and trip designer.
-You have crafted thousands of bespoke travel itineraries for clients ranging from solo backpackers to luxury honeymooners.
-Your task: weave together all available agent data into one cohesive, day-by-day masterpiece of a travel plan.
-
-===========================================
-   TRAVELLER'S ORIGINAL REQUEST
-===========================================
-{trip_brief(state)}
-
-===========================================
-   FLIGHT OPTIONS AVAILABLE
-===========================================
-{state['flight_results']}
-
-===========================================
-  TRAIN OPTIONS AVAILABLE
-===========================================
-{state['train_results']}
-
-===========================================
-  ACCOMMODATION OPTIONS
-===========================================
-{state['hotel_results']}
-
-===========================================
-   WEATHER AT DESTINATION
-===========================================
-{state['weather_results']}
-
-===========================================
-  YOUR TASK -- craft the following:
-===========================================
-
-**TRIP OVERVIEW**
-   * Destination(s) and trip duration
-   * Trip style: adventure / cultural / relaxation / business / family / honeymoon (infer from query)
-   * Estimated total budget range (transport + accommodation + meals + activities)
-   * Best suited for: solo / couple / family / group
-
-**TRANSPORT DECISION GUIDE**
-   (If the train report above says SKIPPED, cover flights only -- do not mention trains for the main journey.)
-   Present a clear side-by-side comparison of flying vs taking the train for this specific trip:
-   * Total door-to-door time for each option
-   * Total cost for each option
-   * Comfort and experience for each option
-   * Clear recommendation with reasoning
-    Let the traveller make an informed final choice.
-
-**DAY-BY-DAY ITINERARY**
-   Build a detailed schedule for each day of the trip. For every day include:
-
-     Day N -- [Theme / City Name]
-       Morning: [Activity + location + duration + cost estimate]
-        Afternoon: [Activity + location + pro tips]
-       Evening: [Dinner recommendation + neighbourhood + cuisine type + price range]
-       Stay: [Hotel name from recommendations + why this property suits this day]
-       Insider Tip: [One unique local tip for this day]
-
-   Align activities with the weather forecast -- schedule indoor activities on rainy days,
-   outdoor adventures on clear days. Flag weather-sensitive plans with a   symbol.
-
-**MEALS & CULINARY EXPERIENCES**
-   * Must-try local dishes at the destination with brief descriptions.
-   * 3 restaurant recommendations per major city: budget / mid-range / splurge.
-   * Street food guide: what to try, where to find it, food safety tips.
-   * Dietary restriction notes (vegetarian, vegan, halal, gluten-free availability).
-
-**MUST-DO EXPERIENCES & ATTRACTIONS**
-   * Top 5 experiences not to miss -- ranked by traveller satisfaction.
-   * Hidden gems and off-the-beaten-path suggestions.
-   * Cultural etiquette: dress code at religious sites, tipping customs, local do's and don'ts.
-   * Best photo spots and the ideal time of day to visit each.
-
-**BUDGET BREAKDOWN**
-   | Category | Budget Option | Mid-Range | Splurge |
-   |----------|--------------|-----------|----------|
-   | Flights/Train | | | |
-   | Accommodation (per night) | | | |
-   | Meals (per day) | | | |
-   | Local transport | | | |
-   | Activities & Entry fees | | | |
-   | **Total Estimated Cost** | | | |
-
-**PRACTICAL LOGISTICS**
-   * Visa requirements and processing time.
-   * Local currency and best ways to access money (ATMs, currency exchange, cards accepted).
-   * Local SIM card or eSIM options for data.
-   * Getting around: metro, auto-rickshaw, cab apps (Ola, Uber, local apps), walking zones.
-   * Emergency contacts: local police, hospital, Indian embassy (if abroad), traveller helpline.
-
-Format with clear emoji-marked headers. Make it feel like a premium, personalised travel guide -- not a generic list.
-"""
-    response = llm.invoke([
-        SystemMessage(
-            content=(
-                "You are a world-class travel itinerary architect who designs bespoke, day-by-day travel plans. "
-                "You excel at synthesising flight data, hotel options, weather forecasts, and train schedules "
-                "into one cohesive, practical, and inspiring travel itinerary. "
-                "Always present both transport options (flight and train) with honest pros/cons so the traveller "
-                "can make an informed choice. Include specific restaurant names, attraction names, and real prices. "
-                "Never use placeholder text -- every detail should be specific and actionable."
-            )
-        ),
-        HumanMessage(content=prompt)
-    ])
-    return {
-        "itinerary": response.content,
-        "messages": [response],
-        "llm_calls": 1
-    }
-
-def final_agent(state: TravelState):
-    final_prompt = f"""
-You are the Chief Travel Experience Officer -- the final editor and presenter of a premium AI-generated travel report.
-Your job is to take all the research gathered by specialist agents and craft a polished, publication-quality travel plan
-that the traveller can immediately act on.
+You are a world-class travel planner. Using the specialist reports below, write ONE polished, immediately
+actionable travel plan. Use real names, prices and platforms from the reports; never use placeholders.
 
 ===========================================
   TRAVELLER'S REQUEST
@@ -710,118 +619,71 @@ that the traveller can immediately act on.
 {trip_brief(state)}
 
 ===========================================
-  RESEARCH FROM ALL SPECIALIST AGENTS
+  SPECIALIST REPORTS
 ===========================================
+FLIGHTS:
+{_clip(state.get('flight_results'))}
 
-   FLIGHT SPECIALIST REPORT:
-{state['flight_results']}
+TRAINS:
+{_clip(state.get('train_results'))}
 
-  RAIL SPECIALIST REPORT:
-{state['train_results']}
+HOTELS:
+{_clip(state.get('hotel_results'))}
 
-  ACCOMMODATION SPECIALIST REPORT:
-{state['hotel_results']}
-
-  WEATHER BRIEFING:
-{state['weather_results']}
-
-   ITINERARY ARCHITECT'S PLAN:
-{state['itinerary']}
+WEATHER:
+{_clip(state.get('weather_results'))}
 
 ===========================================
-  YOUR TASK -- final synthesis:
+  WRITE THE PLAN WITH THESE SECTIONS
 ===========================================
+**EXECUTIVE SUMMARY** -- 3-4 sentences: destination, duration, trip style, top transport and stay picks.
 
-Produce a FINAL TRAVEL PLAN structured as follows:
+**TRANSPORT DECISION** -- FLY: airline | route | duration | price | booking platform.
+TRAIN: train | route | duration | class & price | platform. Then one clear recommendation with a 2-sentence reason.
+(If the train report says SKIPPED, show the FLY line only and do not mention trains for the main journey.)
 
-------------------------------------------
- YOUR PERSONALISED TRAVEL PLAN
-------------------------------------------
+**WHERE TO STAY** -- Luxury / Best Value / Budget pick: hotel, price per night, why. Booking platform.
 
-**EXECUTIVE SUMMARY**
-A 3-4 sentence paragraph summarising the trip: destination, duration, trip style,
-and the top recommendation for transport and accommodation.
+**DAY-BY-DAY ITINERARY** -- for every day: theme/city, morning, afternoon, evening (dinner with price range),
+which hotel, one insider tip. Schedule indoor activities on rainy days; flag weather-sensitive plans.
 
-------------------------------------------
-  vs   TRANSPORT DECISION
-------------------------------------------
-Present the final, clean transport comparison (if the rail report says SKIPPED, show the FLY line only):
-*   **FLY**: [Airline] | [Route] | [Duration] | [Price] | [Booking link/platform]
-*  **TRAIN**: [Train name/number] | [Route] | [Duration] | [Class & price] | [Booking platform]
-*  **Our Recommendation**: [One clear recommendation with a 2-sentence reason]
+**FOOD & MUST-DOS** -- must-try dishes, top 5 experiences, cultural etiquette.
 
-------------------------------------------
-  WHERE TO STAY
-------------------------------------------
-*  **Luxury Pick**: [Hotel name] -- [Price/night] -- [Why it's worth it]
-*  **Best Value Pick**: [Hotel name] -- [Price/night] -- [Why it's the sweet spot]
-*  **Budget Pick**: [Hotel name / hostel] -- [Price/night] -- [Best for whom]
-* Book via: [Platform recommendations]
+**ESTIMATED TOTAL COST** -- table: Transport, Accommodation, Food, Activities, Local transport, GRAND TOTAL
+for Budget / Mid-Range / Splurge.
 
-------------------------------------------
-   DAY-BY-DAY HIGHLIGHTS
-------------------------------------------
-[Condense the itinerary agent's plan into the key highlights for each day.
-Keep it punchy -- 3-5 bullet points per day maximum. Include the top activity,
-best meal, and one insider tip per day.]
+**QUICK ACTION CHECKLIST** -- numbered: book transport, reserve hotel, visa, insurance, apps, packing for the weather.
 
-------------------------------------------
-  ESTIMATED TOTAL TRIP COST
-------------------------------------------
-| Expense | Budget | Mid-Range | Splurge |
-|---------|--------|-----------|----------|
-| Transport (return) | | | |
-| Accommodation (total) | | | |
-| Food & dining (total) | | | |
-| Activities & entrance fees | | | |
-| Local transport | | | |
-| **GRAND TOTAL** | ** /$ X** | ** /$ X** | ** /$ X** |
+**3 PRO TIPS** -- non-obvious insider tips.
 
-------------------------------------------
-  QUICK ACTION CHECKLIST
-------------------------------------------
-A numbered to-do list the traveller should act on RIGHT NOW:
-1. Book transport by [deadline] to secure the best price
-2. Reserve accommodation -- [specific hotel] is booking fast
-3. Apply for visa [if required] -- processing time: X days
-4. Set up travel insurance [recommended providers]
-5. Download these apps before you go: [list 3-5 relevant apps]
-6. Pack essentials based on weather: [3-5 specific items]
-
-------------------------------------------
-  FINAL PRO TIPS FROM OUR TRAVEL AI
-------------------------------------------
-3 unique, non-obvious insider tips that will genuinely make this trip better.
-These should be things that typical travel blogs don't mention.
-
-Close with a warm, enthusiastic sign-off line wishing the traveller a wonderful trip.
+End with a warm one-line sign-off. Be concise: no repetition between sections.
 """
     try:
         response = llm.invoke([
             SystemMessage(
                 content=(
-                    "You are the Chief Travel Experience Officer -- a master synthesiser who transforms specialist agent reports "
-                    "into a polished, premium, and immediately actionable travel plan. "
-                    "You write with clarity, enthusiasm, and authority. Your output should feel like a personalised report "
-                    "from a top-tier travel concierge service -- not a generic AI response. "
-                    "Use structured headers, emoji markers, tables, and bullet points for a premium reading experience. "
-                    "Always be specific: real hotel names, real prices, real booking platforms, real train/flight details."
+                    "You are a world-class travel planner and concierge who turns specialist research into one "
+                    "polished, premium, actionable plan. Use structured headers, emoji markers, tables and bullets. "
+                    "Always be specific: real hotel names, real prices, real booking platforms."
                 )
             ),
-            HumanMessage(content=final_prompt)
+            HumanMessage(content=prompt)
         ])
-
+        text, calls = response.content, 1
     except Exception as e:
-        logger.exception("final_agent failed")
-        # Fall back to the itinerary so the user still gets a plan.
-        response = AIMessage(
-            content=f"⚠️ The final summary could not be generated ({e}). "
-                    f"Here is the detailed itinerary instead:\n\n{state.get('itinerary', '')}"
-        )
-
+        logger.exception("plan_agent failed")
+        # Still give the user what the specialists found.
+        text, calls = (
+            f"⚠️ The combined plan could not be generated ({e}). Here are the specialist reports instead.\n\n"
+            f"## Flights\n{state.get('flight_results', '')}\n\n"
+            f"## Trains\n{state.get('train_results', '')}\n\n"
+            f"## Hotels\n{state.get('hotel_results', '')}\n\n"
+            f"## Weather\n{state.get('weather_results', '')}"
+        ), 0
     return {
-        "messages": [response],
-        "llm_calls": 1
+        "itinerary": text,
+        "messages": [AIMessage(content=text)],
+        "llm_calls": calls,
     }
 
 
@@ -919,8 +781,7 @@ graph.add_node("flight_agent", flight_agent)
 graph.add_node("train_agent", train_agent)       # NEW: train agent
 graph.add_node("hotel_agent", hotel_agent)
 graph.add_node("weather_agent", weather_agent)
-graph.add_node("itinerary_agent", itinerary_agent)
-graph.add_node("final_agent", final_agent)
+graph.add_node("plan_agent", plan_agent)
 
 # Pull origin/destination/dates/budget/travellers out of the request first
 graph.add_edge(START, "extract_details_agent")
@@ -934,10 +795,9 @@ graph.add_edge("flight_agent", "hotel_agent")    # fan-out
 graph.add_edge("flight_agent", "weather_agent")  # fan-out  
 
 # Fan-in: hotel, weather, and train all converge into itinerary
-graph.add_edge(["hotel_agent", "weather_agent", "train_agent"], "itinerary_agent")
+graph.add_edge(["hotel_agent", "weather_agent", "train_agent"], "plan_agent")
 
-graph.add_edge("itinerary_agent", "final_agent")
-graph.add_edge("final_agent", END)
+graph.add_edge("plan_agent", END)
 
 
 # Use a pool instead of one long-lived connection: hosted Postgres closes idle

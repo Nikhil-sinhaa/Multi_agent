@@ -14,8 +14,7 @@ CHUNKS = [
     {"train_agent": {"train_results": "TRAIN TEXT", "llm_calls": 1}},
     {"hotel_agent": {"hotel_results": "HOTEL TEXT", "llm_calls": 1}},
     {"weather_agent": {"weather_results": "WEATHER TEXT", "llm_calls": 1}},
-    {"itinerary_agent": {"itinerary": "ITIN TEXT", "llm_calls": 1}},
-    {"final_agent": {"messages": [types.SimpleNamespace(content="FINAL TEXT")], "llm_calls": 1}},
+    {"plan_agent": {"itinerary": "FINAL TEXT", "messages": [types.SimpleNamespace(content="FINAL TEXT")], "llm_calls": 1}},
 ]
 
 
@@ -80,8 +79,8 @@ def test_llm_calls_metric_is_the_sum_not_the_last_value(stub_main):
     at = _run()
     _generate(at)
     html = " ".join(m.value for m in at.markdown)
-    # 1 preflight extraction + 6 agents reporting 1 each (details node reports 0)
-    assert '<div class="metric-val">7</div><div class="metric-lbl">LLM Calls' in html
+    # 1 preflight extraction + 5 agents reporting 1 each (details node reports 0)
+    assert '<div class="metric-val">6</div><div class="metric-lbl">LLM Calls' in html
 
 
 def test_weather_agent_is_rendered_with_its_results(stub_main):

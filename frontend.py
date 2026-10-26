@@ -364,7 +364,7 @@ with st.sidebar:
         st.markdown(f"<div class='sidebar-chip'>{tech}</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='sidebar-title'>Agent Pipeline</div>", unsafe_allow_html=True)
-    for step in ["① Trip Details", "② Flight Agent", "③ Train Agent", "④ Hotel Agent", "⑤ Weather Agent", "⑥ Itinerary Agent", "⑦ Final Agent"]:
+    for step in ["① Trip Details", "② Flight Agent", "③ Train Agent", "④ Hotel Agent", "⑤ Weather Agent", "⑥ Planner Agent"]:
         st.markdown(f"<div class='sidebar-chip'>{step}</div>", unsafe_allow_html=True)
 
 # ── Hero ──────────────────────────────────────────────────────────────────────
@@ -431,8 +431,7 @@ AGENT_META = {
     "train_agent":     ("🚂", "Train Agent"),
     "hotel_agent":     ("🏨", "Hotel Agent"),
     "weather_agent":   ("🌦️", "Weather Agent"),
-    "itinerary_agent": ("🗓️", "Itinerary Agent"),
-    "final_agent":     ("🧠", "Final Agent"),
+    "plan_agent":      ("🧠", "Planner Agent"),
 }
 
 # Step 1: read the trip details out of the request; ask for anything that is missing.
@@ -526,16 +525,12 @@ if run_request:
                     collected["weather_results"] = text
                     st.markdown(text or "_No weather data returned._")
 
-                elif node_name == "itinerary_agent":
-                    text = state_update.get("itinerary", "")
-                    collected["itinerary"] = text
-                    st.markdown(text or "_No itinerary generated._")
-
-                elif node_name == "final_agent":
+                elif node_name == "plan_agent":
                     msgs = state_update.get("messages", [])
                     text = msgs[-1].content if msgs else ""
                     collected["final_response"] = text
-                    st.markdown(text or "_No final response._")
+                    collected["itinerary"] = text
+                    st.markdown("Plan ready -- shown in full below." if text else "_No plan generated._")
 
                 # Each agent reports only its own calls; add them up.
                 collected["llm_calls"] += state_update.get("llm_calls", 0)
@@ -594,12 +589,7 @@ if run_request:
 
 ---
 
-## 🗓️ Itinerary
-{collected['itinerary'] or 'N/A'}
-
----
-
-## 🧠 Final Travel Plan
+## 🧠 Travel Plan
 {collected['final_response'] or 'N/A'}
 
 ---

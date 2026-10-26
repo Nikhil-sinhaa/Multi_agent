@@ -8,9 +8,7 @@ RESULT_AGENTS = [
     ("train_agent", "train_results"),
     ("hotel_agent", "hotel_results"),
     ("weather_agent", "weather_results"),
-    ("itinerary_agent", "itinerary"),
 ]
-ALL_AGENTS = [a for a, _ in RESULT_AGENTS] + ["final_agent"]
 
 
 @pytest.mark.parametrize("agent,key", RESULT_AGENTS)
@@ -21,9 +19,10 @@ def test_agent_success_counts_one_llm_call(main_module, base_state, agent, key):
     assert update["llm_calls"] == 1
 
 
-def test_final_agent_success_counts_one_llm_call(main_module, base_state):
-    update = main_module.final_agent(base_state)
+def test_plan_agent_success_counts_one_llm_call(main_module, base_state):
+    update = main_module.plan_agent(base_state)
     assert update["messages"][-1].content == "LLM REPLY"
+    assert update["itinerary"] == "LLM REPLY"
     assert update["llm_calls"] == 1
 
 
@@ -51,28 +50,41 @@ def test_tool_failure_does_not_raise(main_module, base_state, monkeypatch, agent
     assert "tool down" in update[key]
 
 
-def test_final_agent_receives_weather(main_module, base_state):
+def test_plan_agent_receives_every_report(main_module, base_state):
     llm = main_module.llm
-    main_module.final_agent(base_state)
-    assert "WEATHER" in llm.prompts[-1][-1].content
+    main_module.plan_agent(base_state)
+    prompt = llm.prompts[-1][-1].content
+    for report in ("FLIGHTS", "TRAINS", "HOTELS", "WEATHER"):
+        assert report in prompt
 
 
-def test_final_agent_failure_falls_back_to_itinerary(main_module, base_state, monkeypatch):
+def test_plan_prompt_stays_under_groq_token_limit(main_module, base_state):
+    """Regression: 413 'Requested 11390, Limit 8000'. Huge upstream reports must be clipped."""
+    for k in ("flight_results", "train_results", "hotel_results", "weather_results"):
+        base_state[k] = "word " * 20000
+    main_module.plan_agent(base_state)
+    prompt = main_module.llm.prompts[-1][-1].content
+    assert len(prompt) < 4 * 2200 + 4000          # 4 clipped reports + template
+    assert "[trimmed]" in prompt
+
+
+def test_plan_agent_failure_falls_back_to_specialist_reports(main_module, base_state, monkeypatch):
     monkeypatch.setattr(main_module, "llm", FakeLLM(error=RuntimeError("boom")))
-    update = main_module.final_agent(base_state)
+    update = main_module.plan_agent(base_state)
     text = update["messages"][-1].content
-    assert "boom" in text and "ITINERARY" in text
+    assert "boom" in text and "FLIGHTS" in text and "HOTELS" in text
+    assert update["llm_calls"] == 0
 
 
 def test_full_graph_total_llm_calls_and_survives_failure(main_module, monkeypatch):
-    """Whole pipeline: 7 successful calls = 6; a failing weather agent does not stop the run."""
+    """Whole pipeline: 6 successful calls; a failing weather agent does not stop the run."""
     initial = {
         "messages": [], "user_query": "trip", "flight_results": "", "hotel_results": "",
         "train_results": "", "itinerary": "", "weather_results": "", "llm_calls": 0,
     }
     cfg = {"configurable": {"thread_id": "t1"}}
     result = main_module.app.invoke(initial, config=cfg)
-    assert result["llm_calls"] == 7   # extraction + 6 agents
+    assert result["llm_calls"] == 6   # extraction + flight, train, hotel, weather, plan
     assert result["trip_details"] == {k: "" for k in main_module.TRIP_FIELDS}  # fake reply isn't JSON
 
     async def broken(city):
@@ -81,7 +93,7 @@ def test_full_graph_total_llm_calls_and_survives_failure(main_module, monkeypatc
     monkeypatch.setattr(main_module, "weather_mcp_search", broken)
     result = main_module.app.invoke(initial, config={"configurable": {"thread_id": "t2"}})
     assert "weather down" in result["weather_results"]
-    assert result["llm_calls"] == 6
+    assert result["llm_calls"] == 5
     assert result["messages"][-1].content == "LLM REPLY"
 
 
@@ -110,7 +122,7 @@ def test_extract_node_skips_llm_when_details_already_supplied(main_module, base_
 
 
 @pytest.mark.parametrize("agent", ["flight_agent", "train_agent", "hotel_agent",
-                                   "weather_agent", "itinerary_agent", "final_agent"])
+                                   "weather_agent", "plan_agent"])
 def test_every_agent_prompt_contains_trip_details(main_module, base_state, agent):
     base_state["trip_details"] = {"origin": "Delhi", "start_date": "2027-03-01"}
     getattr(main_module, agent)(base_state)
@@ -205,4 +217,4 @@ def test_full_graph_skips_train_but_still_completes(main_module, monkeypatch):
                "train_results": "", "itinerary": "", "weather_results": "", "llm_calls": 0}
     result = main_module.app.invoke(initial, config={"configurable": {"thread_id": "skip"}})
     assert result["train_results"].startswith("SKIPPED")
-    assert result["llm_calls"] == 6     # extraction + flight, hotel, weather, itinerary, final
+    assert result["llm_calls"] == 5     # extraction + flight, hotel, weather, plan
