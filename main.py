@@ -3,7 +3,7 @@ import os
 from typing import TypedDict, Annotated
 import operator
 import asyncio
-import psycopg
+from psycopg_pool import ConnectionPool
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages   # smarter reducer: deduplicates by message ID
 from langgraph.checkpoint.postgres import PostgresSaver
@@ -806,8 +806,18 @@ graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
 
-_conn = psycopg.connect(DATABASE_URL, autocommit=True, prepare_threshold=None)
-checkpointer = PostgresSaver(_conn)
+# Use a pool instead of one long-lived connection: hosted Postgres closes idle
+# connections, and the pool checks/replaces dead ones before each use.
+_pool = ConnectionPool(
+    conninfo=DATABASE_URL,
+    min_size=1,
+    max_size=5,
+    max_idle=60,
+    check=ConnectionPool.check_connection,
+    kwargs={"autocommit": True, "prepare_threshold": None},
+    open=True,
+)
+checkpointer = PostgresSaver(_pool)
 checkpointer.setup()
 app = graph.compile(checkpointer=checkpointer)
 
