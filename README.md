@@ -1,3 +1,14 @@
+---
+title: AI Travel Booking System
+emoji: ✈️
+colorFrom: blue
+colorTo: indigo
+sdk: streamlit
+sdk_version: "1.41.0"
+app_file: frontend.py
+pinned: false
+---
+
 # ✈️ AI Travel Booking System — Multi-Agent
 
 A **multi-agent AI travel planner** built with **LangGraph**, **Groq (LLaMA 3.3 70B)**, and **PostgreSQL**. Four specialized agents collaborate in a pipeline to search flights, find hotels, generate a day-by-day itinerary, and deliver a complete travel plan — all from a single natural language query.

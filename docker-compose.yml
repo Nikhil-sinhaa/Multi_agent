@@ -1,0 +1,110 @@
+﻿# =============================================================================
+# docker-compose.yml
+# Starts the full stack with one command: docker compose up
+#
+# Services:
+#   db  - PostgreSQL 16 (for LangGraph checkpointing / conversation memory)
+#   app - AI Travel Multi-Agent System (Streamlit frontend)
+#
+# Networking concept (from notes):
+#   Both services are placed on a custom bridge network called "travel-network".
+#   This lets app reach db using the hostname "db" directly (no IP needed).
+#   Same idea as the mongo-network in the MongoDB + Mongo Express example.
+#
+# Volume concept (from notes):
+#   A container filesystem is ephemeral - data is lost on deletion.
+#   Named volumes solve this: postgres_data persists the DB, travel_plans_data
+#   persists generated itinerary files across restarts and deletions.
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # -- PostgreSQL --------------------------------------------------------------
+  # Image concept: postgres:16-alpine is the static blueprint (the "Class").
+  # Container concept: travel_postgres is the running instance (the "Object").
+  db:
+    image: postgres:16-alpine
+    container_name: travel_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: langraph_memory
+    # Port binding concept: maps host port 5432 -> container port 5432.
+    # Format is always host_port:container_port (same as -p flag in docker run).
+    ports:
+      - "5432:5432"
+    volumes:
+      # Named volume - Docker manages this on the host.
+      # Data survives "docker compose down" (but NOT "docker compose down -v").
+      - postgres_data:/var/lib/postgresql/data
+    # Networking concept: attach this container to the custom bridge network.
+    # The app service can now reach this DB using hostname "db".
+    networks:
+      - travel-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -- AI Travel App -----------------------------------------------------------
+  # build: tells Compose to build a custom image from our Dockerfile.
+  # Equivalent to: docker build -t travel_app:latest .
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: final
+    container_name: travel_app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Networking concept: because both services share "travel-network",
+      # we use the service name "db" as a hostname - Docker resolves it
+      # internally. No IP address or host-port workaround needed.
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/langraph_memory
+    # Port binding concept: maps host 8501 -> container 8501.
+    # Open http://localhost:8501 in your browser to access Streamlit UI.
+    ports:
+      - "8501:8501"
+    volumes:
+      # Named volume for generated travel plans.
+      # Files written to /app/travel_plans inside the container are persisted
+      # on the host even after "docker compose down" (without -v).
+      - travel_plans_data:/app/travel_plans
+    # Networking concept: same custom bridge network as db.
+    networks:
+      - travel-network
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+# =============================================================================
+# Named Volumes
+# Declared here so Docker manages them (stored at /var/lib/docker/volumes/).
+# Survive "docker compose down". Destroyed only with "docker compose down -v".
+# =============================================================================
+volumes:
+  postgres_data:
+  travel_plans_data:
+
+# =============================================================================
+# Custom Bridge Network
+# Networking concept: replaces the auto-generated default network.
+# Both containers join this network and can reach each other by service name.
+# Equivalent to: docker network create travel-network
+# =============================================================================
+networks:
+  travel-network:
+    driver: bridge

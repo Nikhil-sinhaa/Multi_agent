@@ -10,7 +10,7 @@ langchain-core
 tavily-python
 requests
 
-# PostgreSQL driver
+# PostgreSQL driver (with binary for cloud/Linux)
 psycopg[binary]
 psycopg-pool
 
@@ -19,3 +19,11 @@ streamlit
 
 # Utilities
 python-dotenv
+nest_asyncio
+
+# MCP (Model Context Protocol) integrations
+langchain-mcp-adapters
+mcp
+
+# AviationStack MCP (local package)
+./aviationstack-mcp

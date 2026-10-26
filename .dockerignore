@@ -1,0 +1,41 @@
+# =============================================================================
+# .dockerignore
+# Files listed here are EXCLUDED from the Docker build context.
+# Smaller context = faster builds, smaller images, no secret leaks.
+# =============================================================================
+
+# Secrets — NEVER bake API keys into the image
+.env
+
+# Virtual environment — Docker installs its own deps via requirements.txt
+myvenv/
+.venv/
+
+# Python cache — not needed at runtime
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Generated output — not part of the app
+travel_plans/
+
+# Git history — not needed in the image
+.git/
+.gitignore
+
+# IDE / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Docker files themselves (no need to copy them into the image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs / tests (optional — remove if you want them in the image)
+README.md

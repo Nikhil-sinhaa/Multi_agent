@@ -2,7 +2,7 @@ import os
 import streamlit as st
 from datetime import datetime
 from langchain_core.messages import HumanMessage
-from main import app
+from main import app, chat_agent
 
 st.set_page_config(
     page_title="AI Travel Booking System",
@@ -297,6 +297,53 @@ div[data-testid="stDownloadButton"] > button {
     border: 1px solid #2a5080 !important;
     border-radius: 10px !important;
 }
+
+/* ── Chatbot ── */
+.chat-section {
+    margin-top: 2.5rem;
+    border-top: 1px solid #1e2e44;
+    padding-top: 1.5rem;
+}
+.chat-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #e0edf8;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.chat-bubble-user {
+    background: linear-gradient(135deg, #1a3a5c, #0d2840);
+    border: 1px solid #2a5080;
+    border-radius: 14px 14px 4px 14px;
+    padding: 0.75rem 1rem;
+    color: #cce0f5;
+    font-size: 0.9rem;
+    margin-bottom: 0.4rem;
+    max-width: 80%;
+    margin-left: auto;
+    text-align: right;
+}
+.chat-bubble-ai {
+    background: linear-gradient(135deg, #0e1623, #0a1520);
+    border: 1px solid #1e3050;
+    border-left: 3px solid #3a7bd5;
+    border-radius: 4px 14px 14px 14px;
+    padding: 0.75rem 1rem;
+    color: #cce0f5;
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    max-width: 90%;
+}
+.chat-label {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: #4a7aa0;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -313,7 +360,7 @@ with st.sidebar:
         st.markdown(f"<div class='sidebar-chip'>{tech}</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='sidebar-title'>Agent Pipeline</div>", unsafe_allow_html=True)
-    for step in ["① Flight Agent", "② Hotel Agent", "③ Itinerary Agent", "④ Final Agent"]:
+    for step in ["① Flight Agent", "② Train Agent", "③ Hotel Agent", "④ Itinerary Agent", "⑤ Final Agent"]:
         st.markdown(f"<div class='sidebar-chip'>{step}</div>", unsafe_allow_html=True)
 
 # ── Hero ──────────────────────────────────────────────────────────────────────
@@ -355,7 +402,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 # ── Input ─────────────────────────────────────────────────────────────────────
 st.markdown("<div class='input-label'>🗺️ Describe your trip</div>", unsafe_allow_html=True)
 
-QUICK = ["7-day Japan under ₹2L", "Paris trip for 5 days", "Dubai weekend trip", "Bali backpacking 10 days"]
+QUICK = ["7-day Japan under ₹2L", "Paris trip for 5 days", "Train trip Mumbai to Delhi", "Dubai weekend trip", "Bali backpacking 10 days"]
 qcols = st.columns(len(QUICK))
 quick_fill = ""
 for qc, label in zip(qcols, QUICK):
@@ -376,6 +423,7 @@ generate = st.button("🚀  Generate My Travel Plan", use_container_width=True)
 # ── Agent pipeline ────────────────────────────────────────────────────────────
 AGENT_META = {
     "flight_agent":    ("✈️", "Flight Agent"),
+    "train_agent":     ("🚂", "Train Agent"),
     "hotel_agent":     ("🏨", "Hotel Agent"),
     "itinerary_agent": ("🗓️", "Itinerary Agent"),
     "final_agent":     ("🧠", "Final Agent"),
@@ -387,7 +435,9 @@ if generate:
     else:
         config = {"configurable": {"thread_id": thread_id}}
         collected = {"flight_results": "", "hotel_results": "",
-                     "itinerary": "", "final_response": "", "llm_calls": 0}
+                     "train_results": "",
+                     "itinerary": "", "final_response": "", "llm_calls": 0,
+                     "weather_results": "", "user_query": user_query}
 
         st.markdown("---")
         st.markdown("<div class='sec-head'><span>🤖 Agent Pipeline — Live</span></div>",
@@ -399,7 +449,9 @@ if generate:
                 "user_query": user_query,
                 "flight_results": "",
                 "hotel_results": "",
+                "train_results": "",
                 "itinerary": "",
+                "weather_results": "",
                 "llm_calls": 0,
             },
             config=config,
@@ -413,6 +465,11 @@ if generate:
                         text = state_update.get("flight_results", "")
                         collected["flight_results"] = text
                         st.markdown(text or "_No flight data returned._")
+
+                    elif node_name == "train_agent":
+                        text = state_update.get("train_results", "")
+                        collected["train_results"] = text
+                        st.markdown(text or "_No train data returned._")
 
                     elif node_name == "hotel_agent":
                         text = state_update.get("hotel_results", "")
@@ -431,11 +488,16 @@ if generate:
                         st.markdown(text or "_No final response._")
 
                     collected["llm_calls"] = state_update.get("llm_calls", collected["llm_calls"])
+                # Capture sub-results for chatbot context
+                for key in ("flight_results", "hotel_results", "train_results",
+                             "itinerary", "weather_results"):
+                    if key in state_update:
+                        collected[key] = state_update[key]
 
         # Metrics
         st.markdown(f"""
         <div class="metric-row">
-            <div class="metric-box"><div class="metric-val">4</div><div class="metric-lbl">Agents Run</div></div>
+            <div class="metric-box"><div class="metric-val">5</div><div class="metric-lbl">Agents Run</div></div>
             <div class="metric-box"><div class="metric-val">{collected['llm_calls']}</div><div class="metric-lbl">LLM Calls</div></div>
             <div class="metric-box"><div class="metric-val">✅</div><div class="metric-lbl">Status</div></div>
         </div>
@@ -466,6 +528,11 @@ if generate:
 
 ---
 
+## 🚂 Train Options
+{collected['train_results'] or 'N/A'}
+
+---
+
 ## 🏨 Hotel Information
 {collected['hotel_results'] or 'N/A'}
 
@@ -493,3 +560,81 @@ if generate:
         with info_col:
             st.markdown(f"<div class='save-bar'>📁 Auto-saved → <code>travel_plans/{filename}</code></div>",
                         unsafe_allow_html=True)
+
+        # Persist collected state for chatbot
+        st.session_state["travel_context"] = collected
+        st.session_state.setdefault("chat_history", [])
+
+# -- Chatbot Section -----------------------------------------------------------
+if st.session_state.get("travel_context"):
+    ctx = st.session_state["travel_context"]
+
+    st.markdown("---")
+    st.markdown("<div class='sec-head'><span>&#128172; Ask Me Anything About Your Trip</span></div>",
+                unsafe_allow_html=True)
+
+    # Initialize chat history
+    if "chat_history" not in st.session_state:
+        st.session_state["chat_history"] = []
+
+    # ---- Render conversation history ----
+    for turn in st.session_state["chat_history"]:
+        st.markdown(
+            f"<div class='chat-label'>You</div>"
+            f"<div class='chat-bubble-user'>{turn['q']}</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<div class='chat-label'>Travel AI</div>"
+            f"<div class='chat-bubble-ai'>{turn['a']}</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ---- Input row ----
+    # Use a form so Enter key also triggers submission
+    with st.form(key="chat_form", clear_on_submit=True):
+        form_col, btn_col = st.columns([5, 1])
+        with form_col:
+            question_input = st.text_input(
+                "question_input",
+                placeholder="e.g. Which hotel is cheapest? What should I pack?",
+                label_visibility="collapsed",
+            )
+        with btn_col:
+            submitted = st.form_submit_button("Send", use_container_width=True)
+
+    # ---- Process submission ----
+    if submitted:
+        question = question_input.strip()
+        if question:
+            with st.spinner("Thinking..."):
+                chat_state = {
+                    "messages":         [HumanMessage(content=question)],
+                    "user_query":       ctx.get("user_query", ""),
+                    "flight_results":   ctx.get("flight_results", ""),
+                    "hotel_results":    ctx.get("hotel_results", ""),
+                    "train_results":    ctx.get("train_results", ""),
+                    "itinerary":        ctx.get("itinerary", ""),
+                    "weather_results":  ctx.get("weather_results", ""),
+                    "chat_question":    question,
+                    "chat_answer":      "",
+                    "final_response":   ctx.get("final_response", ""),
+                    "llm_calls":        0,
+                }
+                try:
+                    result = chat_agent(chat_state)
+                    answer = result.get("chat_answer", "").strip() or "Sorry, I could not generate an answer."
+                except Exception as e:
+                    answer = f"Error from chat agent: {e}"
+
+            st.session_state["chat_history"].append({"q": question, "a": answer})
+            st.rerun()
+        else:
+            st.warning("Please type a question before clicking Send.")
+
+    # Clear chat button
+    if st.session_state["chat_history"]:
+        if st.button("Clear Chat", key="clear_chat_btn"):
+            st.session_state["chat_history"] = []
+            st.rerun()
+
