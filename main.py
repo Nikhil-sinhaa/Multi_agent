@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 llm = ChatGroq(
-    model="llama-3.1-70b-versatile",
+    model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
 )
 DATABASE_URL = os.getenv("DATABASE_URL")
 
