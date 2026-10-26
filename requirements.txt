@@ -19,7 +19,6 @@ streamlit
 
 # Utilities
 python-dotenv
-nest_asyncio
 
 # MCP (Model Context Protocol) integrations
 langchain-mcp-adapters

@@ -3,8 +3,6 @@ import os
 from typing import TypedDict, Annotated
 import operator
 import asyncio
-import nest_asyncio
-nest_asyncio.apply()  # Allow asyncio.run() inside Streamlit's event loop
 import psycopg
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages   # smarter reducer: deduplicates by message ID
