@@ -1,8 +1,9 @@
 import os
+import uuid
 import streamlit as st
 from datetime import datetime
 from langchain_core.messages import HumanMessage
-from main import app, chat_agent
+from main import app, chat_agent, extract_trip_details, missing_trip_fields, TRIP_FIELDS
 
 st.set_page_config(
     page_title="AI Travel Booking System",
@@ -352,15 +353,18 @@ with st.sidebar:
     st.markdown("<div class='sidebar-title'>🌍 AI Travel Planner</div>", unsafe_allow_html=True)
     st.markdown("---")
 
-    thread_id = st.text_input("👤 User ID", value="aarohi_user",
-                              help="Your session ID — keeps travel history across queries")
+    # One random ID per browser session, so visitors never share a saved conversation.
+    if "thread_id" not in st.session_state:
+        st.session_state["thread_id"] = uuid.uuid4().hex
+    thread_id = st.session_state["thread_id"]
+    st.caption(f"👤 Session ID: `{thread_id[:8]}`")
 
     st.markdown("<div class='sidebar-title'>Powered by</div>", unsafe_allow_html=True)
     for tech in ["🔗 LangGraph", "🧠 Groq · LLaMA 3.3 70B", "🐘 PostgreSQL", "🔍 Tavily Search", "✈️ AviationStack"]:
         st.markdown(f"<div class='sidebar-chip'>{tech}</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='sidebar-title'>Agent Pipeline</div>", unsafe_allow_html=True)
-    for step in ["① Flight Agent", "② Train Agent", "③ Hotel Agent", "④ Itinerary Agent", "⑤ Final Agent"]:
+    for step in ["① Trip Details", "② Flight Agent", "③ Train Agent", "④ Hotel Agent", "⑤ Weather Agent", "⑥ Itinerary Agent", "⑦ Final Agent"]:
         st.markdown(f"<div class='sidebar-chip'>{step}</div>", unsafe_allow_html=True)
 
 # ── Hero ──────────────────────────────────────────────────────────────────────
@@ -422,101 +426,148 @@ generate = st.button("🚀  Generate My Travel Plan", use_container_width=True)
 
 # ── Agent pipeline ────────────────────────────────────────────────────────────
 AGENT_META = {
+    "extract_details_agent": ("🧾", "Trip Details"),
     "flight_agent":    ("✈️", "Flight Agent"),
     "train_agent":     ("🚂", "Train Agent"),
     "hotel_agent":     ("🏨", "Hotel Agent"),
+    "weather_agent":   ("🌦️", "Weather Agent"),
     "itinerary_agent": ("🗓️", "Itinerary Agent"),
     "final_agent":     ("🧠", "Final Agent"),
 }
 
+# Step 1: read the trip details out of the request; ask for anything that is missing.
 if generate:
     if not user_query.strip():
         st.warning("Please describe your trip first.")
     else:
-        config = {"configurable": {"thread_id": thread_id}}
-        collected = {"flight_results": "", "hotel_results": "",
-                     "train_results": "",
-                     "itinerary": "", "final_response": "", "llm_calls": 0,
-                     "weather_results": "", "user_query": user_query}
+        with st.spinner("Reading your request..."):
+            details = extract_trip_details(user_query)
+        st.session_state["pending_trip"] = {"query": user_query, "details": details}
 
-        st.markdown("---")
-        st.markdown("<div class='sec-head'><span>🤖 Agent Pipeline — Live</span></div>",
+run_request = None
+pending = st.session_state.get("pending_trip")
+if pending:
+    missing = missing_trip_fields(pending["details"])
+    if not missing:
+        run_request = st.session_state.pop("pending_trip")
+    else:
+        with st.form("trip_details_form"):
+            st.markdown("**A few details are missing.** Fill in what you know; "
+                        "leave the rest blank if you're flexible.")
+            answers = {k: st.text_input(TRIP_FIELDS[k], key=f"td_{k}") for k in missing}
+            go = st.form_submit_button("Continue")
+        if go:
+            merged = {**pending["details"],
+                      **{k: v.strip() for k, v in answers.items() if v.strip()}}
+            if not merged.get("destination"):
+                st.warning("Please tell me where you want to go.")
+            else:
+                run_request = {"query": pending["query"], "details": merged}
+                st.session_state.pop("pending_trip")
+
+if run_request:
+    user_query = run_request["query"]
+    trip_details = run_request["details"]
+    config = {"configurable": {"thread_id": thread_id}}
+    # The detail extraction call happened before the graph started, so count it here.
+    collected = {"flight_results": "", "hotel_results": "",
+                 "train_results": "",
+                 "itinerary": "", "final_response": "", "llm_calls": 1,
+                 "weather_results": "", "user_query": user_query,
+                 "trip_details": trip_details}
+    agents_run = 0
+
+    st.markdown("---")
+    st.markdown("<div class='sec-head'><span>🤖 Agent Pipeline — Live</span></div>",
+                unsafe_allow_html=True)
+
+    for chunk in app.stream(
+        {
+            "messages": [HumanMessage(content=user_query)],
+            "user_query": user_query,
+            "flight_results": "",
+            "hotel_results": "",
+            "train_results": "",
+            "itinerary": "",
+            "weather_results": "",
+            "trip_details": trip_details,
+            "llm_calls": 0,
+        },
+        config=config,
+        stream_mode="updates",
+    ):
+        for node_name, state_update in chunk.items():
+            icon, label = AGENT_META.get(node_name, ("🔧", node_name))
+
+            agents_run += 1
+            with st.status(f"{icon}  {label}", state="complete", expanded=True):
+                if node_name == "extract_details_agent":
+                    st.markdown("\n".join(f"- **{TRIP_FIELDS[k]}:** {trip_details[k]}"
+                                          for k in TRIP_FIELDS if trip_details.get(k))
+                                or "_No specific details given._")
+
+                elif node_name == "flight_agent":
+                    text = state_update.get("flight_results", "")
+                    collected["flight_results"] = text
+                    st.markdown(text or "_No flight data returned._")
+
+                elif node_name == "train_agent":
+                    text = state_update.get("train_results", "")
+                    collected["train_results"] = text
+                    st.markdown(text or "_No train data returned._")
+
+                elif node_name == "hotel_agent":
+                    text = state_update.get("hotel_results", "")
+                    collected["hotel_results"] = text
+                    st.markdown(text or "_No hotel data returned._")
+
+                elif node_name == "weather_agent":
+                    text = state_update.get("weather_results", "")
+                    collected["weather_results"] = text
+                    st.markdown(text or "_No weather data returned._")
+
+                elif node_name == "itinerary_agent":
+                    text = state_update.get("itinerary", "")
+                    collected["itinerary"] = text
+                    st.markdown(text or "_No itinerary generated._")
+
+                elif node_name == "final_agent":
+                    msgs = state_update.get("messages", [])
+                    text = msgs[-1].content if msgs else ""
+                    collected["final_response"] = text
+                    st.markdown(text or "_No final response._")
+
+                # Each agent reports only its own calls; add them up.
+                collected["llm_calls"] += state_update.get("llm_calls", 0)
+            # Capture sub-results for chatbot context
+            for key in ("flight_results", "hotel_results", "train_results",
+                         "itinerary", "weather_results"):
+                if key in state_update:
+                    collected[key] = state_update[key]
+
+    # Metrics
+    st.markdown(f"""
+    <div class="metric-row">
+        <div class="metric-box"><div class="metric-val">{agents_run}</div><div class="metric-lbl">Agents Run</div></div>
+        <div class="metric-box"><div class="metric-val">{collected['llm_calls']}</div><div class="metric-lbl">LLM Calls</div></div>
+        <div class="metric-box"><div class="metric-val">✅</div><div class="metric-lbl">Status</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Final plan card
+    if collected["final_response"]:
+        st.markdown("<div class='sec-head'><span>🧠 Final Travel Plan</span></div>",
+                    unsafe_allow_html=True)
+        st.markdown(f"<div class='final-card'>{collected['final_response']}</div>",
                     unsafe_allow_html=True)
 
-        for chunk in app.stream(
-            {
-                "messages": [HumanMessage(content=user_query)],
-                "user_query": user_query,
-                "flight_results": "",
-                "hotel_results": "",
-                "train_results": "",
-                "itinerary": "",
-                "weather_results": "",
-                "llm_calls": 0,
-            },
-            config=config,
-            stream_mode="updates",
-        ):
-            for node_name, state_update in chunk.items():
-                icon, label = AGENT_META.get(node_name, ("🔧", node_name))
+    # Save
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"travel_plan_{timestamp}.md"
+    save_dir = os.path.join(os.path.dirname(__file__), "travel_plans")
+    os.makedirs(save_dir, exist_ok=True)
 
-                with st.status(f"{icon}  {label}", state="complete", expanded=True):
-                    if node_name == "flight_agent":
-                        text = state_update.get("flight_results", "")
-                        collected["flight_results"] = text
-                        st.markdown(text or "_No flight data returned._")
-
-                    elif node_name == "train_agent":
-                        text = state_update.get("train_results", "")
-                        collected["train_results"] = text
-                        st.markdown(text or "_No train data returned._")
-
-                    elif node_name == "hotel_agent":
-                        text = state_update.get("hotel_results", "")
-                        collected["hotel_results"] = text
-                        st.markdown(text or "_No hotel data returned._")
-
-                    elif node_name == "itinerary_agent":
-                        text = state_update.get("itinerary", "")
-                        collected["itinerary"] = text
-                        st.markdown(text or "_No itinerary generated._")
-
-                    elif node_name == "final_agent":
-                        msgs = state_update.get("messages", [])
-                        text = msgs[-1].content if msgs else ""
-                        collected["final_response"] = text
-                        st.markdown(text or "_No final response._")
-
-                    collected["llm_calls"] = state_update.get("llm_calls", collected["llm_calls"])
-                # Capture sub-results for chatbot context
-                for key in ("flight_results", "hotel_results", "train_results",
-                             "itinerary", "weather_results"):
-                    if key in state_update:
-                        collected[key] = state_update[key]
-
-        # Metrics
-        st.markdown(f"""
-        <div class="metric-row">
-            <div class="metric-box"><div class="metric-val">5</div><div class="metric-lbl">Agents Run</div></div>
-            <div class="metric-box"><div class="metric-val">{collected['llm_calls']}</div><div class="metric-lbl">LLM Calls</div></div>
-            <div class="metric-box"><div class="metric-val">✅</div><div class="metric-lbl">Status</div></div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Final plan card
-        if collected["final_response"]:
-            st.markdown("<div class='sec-head'><span>🧠 Final Travel Plan</span></div>",
-                        unsafe_allow_html=True)
-            st.markdown(f"<div class='final-card'>{collected['final_response']}</div>",
-                        unsafe_allow_html=True)
-
-        # Save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"travel_plan_{timestamp}.md"
-        save_dir = os.path.join(os.path.dirname(__file__), "travel_plans")
-        os.makedirs(save_dir, exist_ok=True)
-
-        file_content = f"""# Travel Plan
+    file_content = f"""# Travel Plan
 **Query:** {user_query}
 **Generated:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 **User ID:** {thread_id}
@@ -538,6 +589,11 @@ if generate:
 
 ---
 
+## 🌦️ Weather
+{collected['weather_results'] or 'N/A'}
+
+---
+
 ## 🗓️ Itinerary
 {collected['itinerary'] or 'N/A'}
 
@@ -549,21 +605,21 @@ if generate:
 ---
 *LLM Calls: {collected['llm_calls']}*
 """
-        with open(os.path.join(save_dir, filename), "w", encoding="utf-8") as f:
-            f.write(file_content)
+    with open(os.path.join(save_dir, filename), "w", encoding="utf-8") as f:
+        f.write(file_content)
 
-        dl_col, info_col = st.columns([1, 3])
-        with dl_col:
-            st.download_button("⬇️ Download Plan", data=file_content,
-                               file_name=filename, mime="text/markdown",
-                               use_container_width=True)
-        with info_col:
-            st.markdown(f"<div class='save-bar'>📁 Auto-saved → <code>travel_plans/{filename}</code></div>",
-                        unsafe_allow_html=True)
+    dl_col, info_col = st.columns([1, 3])
+    with dl_col:
+        st.download_button("⬇️ Download Plan", data=file_content,
+                           file_name=filename, mime="text/markdown",
+                           use_container_width=True)
+    with info_col:
+        st.markdown(f"<div class='save-bar'>📁 Auto-saved → <code>travel_plans/{filename}</code></div>",
+                    unsafe_allow_html=True)
 
-        # Persist collected state for chatbot
-        st.session_state["travel_context"] = collected
-        st.session_state.setdefault("chat_history", [])
+    # Persist collected state for chatbot
+    st.session_state["travel_context"] = collected
+    st.session_state.setdefault("chat_history", [])
 
 # -- Chatbot Section -----------------------------------------------------------
 if st.session_state.get("travel_context"):
@@ -616,6 +672,7 @@ if st.session_state.get("travel_context"):
                     "train_results":    ctx.get("train_results", ""),
                     "itinerary":        ctx.get("itinerary", ""),
                     "weather_results":  ctx.get("weather_results", ""),
+                    "trip_details":     ctx.get("trip_details", {}),
                     "chat_question":    question,
                     "chat_answer":      "",
                     "final_response":   ctx.get("final_response", ""),
